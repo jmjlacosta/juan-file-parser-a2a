@@ -55,6 +55,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical design.
 - System tools: pdftotext, ripgrep
 - API keys for LLM services (OpenAI/Google AI)
 
+### A2A Communication Test
+
+We've implemented a basic agent-to-agent communication test with two agents:
+- **Agent A (Greeter)**: Simple agent that greets users
+- **Agent B (Caller)**: Demonstrates A2A communication by calling Agent A
+
+See `agent_a_greeter/` and `agent_b_caller/` directories for the implementation.
+
 ### Installation
 
 ```bash
