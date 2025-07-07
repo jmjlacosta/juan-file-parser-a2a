@@ -30,7 +30,7 @@ class MissingAPIKeyError(Exception):
 
 
 secrets_health = {
-    "STATUS": "No LLM dependencies - ready for A2A testing",
+    "GOOGLE_API_KEY": "OK" if os.getenv("GOOGLE_API_KEY") is not None else "MISSING",
 }
 
 capabilities = AgentCapabilities(streaming=True)

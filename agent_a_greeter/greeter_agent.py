@@ -1,11 +1,13 @@
 import json
-import re
 import random
-from typing import Any, AsyncIterable, Optional, Dict
-from google.adk.tools.tool_context import ToolContext
+from typing import Any, AsyncIterable, Optional
+from google.adk.agents.llm_agent import LlmAgent
 from google.adk.artifacts import InMemoryArtifactService
 from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from google.adk.tools.tool_context import ToolContext
+from google.genai import types
 
 
 # Local cache of greeting IDs for state management
@@ -136,118 +138,117 @@ def generate_greeting(greeting_id: str) -> dict[str, Any]:
 
 
 class GreeterAgent:
-    """An enhanced agent that provides customizable greetings with state management."""
+    """An agent that provides customizable greetings using Gemini."""
     
-    SUPPORTED_CONTENT_TYPES = ["text", "text/plain", "application/json"]
+    SUPPORTED_CONTENT_TYPES = ["text", "text/plain"]
     
     def __init__(self):
-        self.name = "greeter_agent"
+        self._agent = self._build_agent()
         self._user_id = "greeter_agent_user"
-        self._artifact_service = InMemoryArtifactService()
-        self._session_service = InMemorySessionService()
-        self._memory_service = InMemoryMemoryService()
+        self._runner = Runner(
+            app_name=self._agent.name,
+            agent=self._agent,
+            artifact_service=InMemoryArtifactService(),
+            session_service=InMemorySessionService(),
+            memory_service=InMemoryMemoryService(),
+        )
     
     def get_processing_message(self) -> str:
         return "Processing your greeting request..."
     
-    def extract_name(self, query: str) -> Optional[str]:
-        """Extract a name from the query using simple patterns."""
-        patterns = [
-            r"greet\s+(\w+)",
-            r"hello\s+to\s+(\w+)",
-            r"welcome\s+(\w+)",
-            r"say\s+hello\s+to\s+(\w+)",
-            r"greet\s+(?:our\s+guest\s+)?(\w+)",
-        ]
-        
-        query_lower = query.lower()
-        for pattern in patterns:
-            match = re.search(pattern, query_lower, re.IGNORECASE)
-            if match:
-                return match.group(1).capitalize()
-        
-        # Try to find any name-like word
-        words = query.split()
-        for word in words:
-            if word[0].isupper() and len(word) > 1:
-                return word
-        
-        return None
+    def _build_agent(self) -> LlmAgent:
+        """Builds the LLM agent for the Greeter agent using Gemini."""
+        return LlmAgent(
+            model="gemini-2.0-flash-001",  # Using Gemini like the sample
+            name="greeter_agent",
+            description=(
+                "This agent provides customizable greetings. "
+                "It demonstrates A2A communication with form handling and state management."
+            ),
+            instruction="""
+You are a friendly greeting agent. Your job is to help users create personalized greetings.
+
+When someone asks you to greet a person, you have two options:
+
+1. For simple greetings (e.g., "greet John"), use the tools to:
+   - First create a greeting form with `create_greeting_form()` 
+   - Then immediately generate the greeting with `generate_greeting()`
+   - Return the greeting text to the user
+
+2. For custom greetings (when user says "custom" or "customize"), use the tools to:
+   - Create a form with `create_greeting_form()`
+   - Return the form to the user with `return_greeting_form()` so they can customize it
+   - When they submit the completed form, use `generate_greeting()` with the greeting_id
+
+Instructions:
+- Extract the person's name from the request when possible
+- For simple requests, use "casual" style by default
+- Always be friendly and helpful
+- If no name is provided, you can use "Friend" as a default
+
+Examples:
+- "Please greet John" -> create_greeting_form(name="John", style="casual") then generate_greeting()
+- "Custom greeting for Maria" -> create_greeting_form(name="Maria") then return_greeting_form()
+- "Say hello formally to Dr. Smith" -> create_greeting_form(name="Dr. Smith", style="formal") then generate_greeting()
+""",
+            tools=[
+                create_greeting_form,
+                return_greeting_form,
+                generate_greeting,
+            ],
+        )
     
-    async def stream(self, query: str, session_id: str) -> AsyncIterable[dict[str, Any]]:
-        """Process the query with enhanced form and state capabilities."""
-        # Get or create session
-        session = await self._session_service.get_session(
-            app_name=self.name,
+    async def stream(self, query, session_id) -> AsyncIterable[dict[str, Any]]:
+        session = await self._runner.session_service.get_session(
+            app_name=self._agent.name,
             user_id=self._user_id,
             session_id=session_id,
         )
-        
+        content = types.Content(role="user", parts=[types.Part.from_text(text=query)])
         if session is None:
-            session = await self._session_service.create_session(
-                app_name=self.name,
+            session = await self._runner.session_service.create_session(
+                app_name=self._agent.name,
                 user_id=self._user_id,
                 state={},
                 session_id=session_id,
             )
-        
-        # Yield processing message
-        yield {
-            "is_task_complete": False,
-            "updates": self.get_processing_message(),
-        }
-        
-        # Check if this is a form submission
-        try:
-            query_data = json.loads(query)
-            if isinstance(query_data, dict) and "greeting_id" in query_data:
-                # This is a completed form, generate the greeting
-                result = generate_greeting(query_data["greeting_id"])
-                yield {
-                    "is_task_complete": True,
-                    "content": result,
-                }
-                return
-        except json.JSONDecodeError:
-            pass
-        
-        # Check for custom greeting request
-        if "custom" in query.lower() or "form" in query.lower():
-            # Create a form for customization
-            name = self.extract_name(query)
-            form_data = create_greeting_form(name=name)
-            
-            # Create mock tool context
-            class MockToolContext:
-                class Actions:
-                    skip_summarization = False
-                    escalate = False
-                actions = Actions()
-            
-            form_response = return_greeting_form(
-                form_data,
-                MockToolContext(),
-                "Please fill out this form to customize your greeting"
-            )
-            
-            yield {
-                "is_task_complete": True,
-                "content": form_response,
-            }
-        else:
-            # Simple greeting flow
-            name = self.extract_name(query)
-            if name:
-                # Create a greeting record
-                form_data = create_greeting_form(name=name, style="casual")
-                result = generate_greeting(form_data["greeting_id"])
+        async for event in self._runner.run_async(
+            user_id=self._user_id, session_id=session.id, new_message=content
+        ):
+            if event.is_final_response():
+                response = ""
+                if event.content and event.content.parts:
+                    # Handle mixed responses (text + function calls)
+                    text_parts = [p.text for p in event.content.parts if p.text]
+                    function_parts = [
+                        p.function_response.model_dump()
+                        for p in event.content.parts
+                        if p.function_response
+                    ]
+                    
+                    if text_parts and function_parts:
+                        # Mixed response: combine text and function data
+                        response = {
+                            "text": "\n".join(text_parts),
+                            "function_data": (
+                                function_parts[0] if function_parts else None
+                            ),
+                        }
+                    elif text_parts:
+                        # Text only response
+                        response = "\n".join(text_parts)
+                    elif function_parts:
+                        # Function only response
+                        response = function_parts[0]
+                    else:
+                        response = ""
                 
                 yield {
                     "is_task_complete": True,
-                    "content": result["greeting"],
+                    "content": response,
                 }
             else:
                 yield {
-                    "is_task_complete": True,
-                    "content": "I'd be happy to greet someone! Please tell me who to greet, or ask for a 'custom greeting' to see more options.",
+                    "is_task_complete": False,
+                    "updates": self.get_processing_message(),
                 }
