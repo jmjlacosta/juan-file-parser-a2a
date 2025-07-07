@@ -49,8 +49,32 @@ class GreeterAgentExecutor(A2AAgentExecutor):
             async for event in self._agent.stream(query, session_id):
                 if event.get("is_task_complete"):
                     content = event.get("content", "")
-                    if isinstance(content, dict):
-                        # If content is a dict, convert to JSON string
+                    
+                    # Handle different content types
+                    if isinstance(content, str):
+                        # Check if it's a JSON string (form response)
+                        try:
+                            parsed = json.loads(content)
+                            if parsed.get("type") == "form":
+                                # This is a form response
+                                yield StreamingMessage(
+                                    type="form",
+                                    content=content,
+                                )
+                            else:
+                                # Regular JSON response
+                                yield StreamingMessage(
+                                    type="task",
+                                    content=content,
+                                )
+                        except json.JSONDecodeError:
+                            # Plain text response
+                            yield StreamingMessage(
+                                type="task",
+                                content=content,
+                            )
+                    elif isinstance(content, dict):
+                        # Direct dict response
                         yield StreamingMessage(
                             type="task",
                             content=json.dumps(content),

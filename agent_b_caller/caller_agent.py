@@ -75,12 +75,21 @@ class CallerAgent:
                     result = response.json()
                     # Extract the actual greeting from the response
                     if isinstance(result, dict):
-                        if "content" in result:
+                        # Check if it's a form response
+                        if result.get("type") == "form":
+                            return f"Agent A sent a form for customization:\n{json.dumps(result, indent=2)}"
+                        elif "greeting" in result:
+                            # Enhanced greeting response
+                            greeting = result.get("greeting")
+                            status = result.get("status", "unknown")
+                            greeting_id = result.get("greeting_id", "unknown")
+                            return f"Agent A responded (ID: {greeting_id}, Status: {status}):\n{greeting}"
+                        elif "content" in result:
                             return f"Agent A responded: {result['content']}"
                         elif "response" in result:
                             return f"Agent A responded: {result['response']}"
                         else:
-                            return f"Agent A responded with: {json.dumps(result)}"
+                            return f"Agent A responded with: {json.dumps(result, indent=2)}"
                     else:
                         return f"Agent A responded: {result}"
                 else:
@@ -99,14 +108,62 @@ class CallerAgent:
             "updates": self.get_processing_message(),
         }
         
-        # Extract name from query
-        name = self.extract_name(query)
-        
-        # Call Agent A
-        response = await self.call_greeter_agent(name)
-        
-        # Yield final response
-        yield {
-            "is_task_complete": True,
-            "content": f"Demonstrating A2A communication:\n{response}",
-        }
+        # Check if user wants a custom greeting
+        if "custom" in query.lower():
+            # Send a custom greeting request to Agent A
+            agent_a_url = os.getenv("AGENT_A_URL")
+            if not agent_a_url:
+                yield {
+                    "is_task_complete": True,
+                    "content": "Error: AGENT_A_URL is not configured.",
+                }
+                return
+                
+            headers = {"Content-Type": "application/json"}
+            clerk_token = os.getenv("CLERK_TOKEN")
+            if clerk_token:
+                headers["Authorization"] = f"Bearer {clerk_token}"
+                
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Request a custom form from Agent A
+                    name = self.extract_name(query)
+                    custom_query = f"custom greeting for {name}" if name else "custom greeting"
+                    
+                    response = await client.post(
+                        f"{agent_a_url}/process",
+                        json={"query": custom_query, "session_id": session_id},
+                        headers=headers,
+                    )
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        content = f"Demonstrating A2A communication with forms:\n"
+                        if isinstance(result, dict) and result.get("type") == "form":
+                            content += f"Agent A provided a customization form:\n{json.dumps(result, indent=2)}"
+                        else:
+                            content += str(result)
+                        
+                        yield {
+                            "is_task_complete": True,
+                            "content": content,
+                        }
+                    else:
+                        yield {
+                            "is_task_complete": True,
+                            "content": f"Error: HTTP {response.status_code} - {response.text}",
+                        }
+            except Exception as e:
+                yield {
+                    "is_task_complete": True,
+                    "content": f"Error calling Agent A: {str(e)}",
+                }
+        else:
+            # Standard greeting flow
+            name = self.extract_name(query)
+            response = await self.call_greeter_agent(name)
+            
+            yield {
+                "is_task_complete": True,
+                "content": f"Demonstrating A2A communication:\n{response}",
+            }
