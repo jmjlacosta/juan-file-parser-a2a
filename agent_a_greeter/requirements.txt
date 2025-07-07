@@ -1,0 +1,8 @@
+a2a-sdk
+google-adk>=1.0.0
+google-genai>=1.9.0
+litellm>=1.0.0
+openai>=1.0.0
+python-dotenv>=1.0.0
+uvicorn[standard]>=0.30.0
+starlette>=0.37.0
